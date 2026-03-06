@@ -186,7 +186,7 @@ def check_authentication():
             "Auth: DefaultAzureCredential",
             False,
             "azure-identity package not installed",
-            "Run: pip install --pre azure-ai-projects (includes azure-identity as dependency)",
+            "Run: pip install 'azure-ai-projects>=2.0.0' azure-identity python-dotenv",
         )
     except Exception as e:
         return ValidationResult(
@@ -209,7 +209,7 @@ def check_project_connection(endpoint, connection_name):
 
         # Try to get the specific connection
         try:
-            connection = client.connections.get(name=connection_name)
+            connection = client.connections.get(connection_name)
             return ValidationResult(
                 "Project: AI Search connection",
                 True,
@@ -232,7 +232,7 @@ def check_project_connection(endpoint, connection_name):
             "Project: AI Search connection",
             False,
             "azure-ai-projects package not installed or wrong version",
-            "Run: pip install --pre azure-ai-projects  (the --pre flag is required for v2.0.0b3+)",
+            "Run: pip install azure-ai-projects>=2.0.0 (stable -- no --pre needed)",
         )
     except Exception as e:
         return ValidationResult(
@@ -272,9 +272,9 @@ def check_package_version():
         import azure.ai.projects
         version = getattr(azure.ai.projects, "__version__", "unknown")
 
-        # Check if Responses API classes are available
+        # Check if Responses API classes are available (2.0.0 stable uses AzureAISearchTool)
         try:
-            from azure.ai.projects.models import AzureAISearchAgentTool
+            from azure.ai.projects.models import AzureAISearchTool, PromptAgentDefinition
             return ValidationResult(
                 "Package: azure-ai-projects",
                 True,
@@ -284,16 +284,15 @@ def check_package_version():
             return ValidationResult(
                 "Package: azure-ai-projects",
                 False,
-                f"Version {version} installed, but AzureAISearchAgentTool not found",
-                "You likely have v1.x (stable). Install the pre-release: "
-                "pip install --pre azure-ai-projects  (need v2.0.0b3+)",
+                f"Version {version} installed, but Responses API classes not found",
+                'Run: pip install azure-ai-projects>=2.0.0',
             )
     except ImportError:
         return ValidationResult(
             "Package: azure-ai-projects",
             False,
             "Package not installed",
-            "Run: pip install --pre azure-ai-projects",
+            "Run: pip install azure-ai-projects>=2.0.0",
         )
 
 

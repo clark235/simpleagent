@@ -2,15 +2,15 @@
 Azure AI Foundry Agent with Azure AI Search (Responses API)
 
 Creates a Foundry agent with the AI Search tool and queries it using the
-OpenAI Responses API via get_openai_client(). Returns grounded answers
-with URL citations.
+OpenAI Responses API. Returns grounded answers with URL citations.
 
-New Foundry (2025) pattern:
-  - AIProjectClient.agents.create_version()  ← creates the agent definition
-  - AIProjectClient.get_openai_client()       ← gets an authenticated OpenAI client
-  - openai_client.responses.create()         ← runs the agent via Responses API
+New Foundry (2025) pattern using azure-ai-projects >= 2.0.0:
+  - AIProjectClient.agents.create_version()   ← registers named agent
+  - AIProjectClient.get_openai_client()        ← authenticated OpenAI client
+  - openai_client.responses.create()          ← Responses API invocation
 
-Requires: pip install --pre azure-ai-projects azure-identity python-dotenv
+Requires:
+  pip install "azure-ai-projects>=2.0.0" azure-identity python-dotenv
 """
 
 import os
@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
-    AzureAISearchAgentTool,
+    AzureAISearchTool,
     AzureAISearchToolResource,
     AISearchIndexResource,
     AzureAISearchQueryType,
@@ -48,15 +48,16 @@ def main():
         print("Copy .env.example to .env and fill in your values.")
         sys.exit(1)
 
-    # ── Clients ───────────────────────────────────────────────────────────────
+    # ── Client ────────────────────────────────────────────────────────────────
     credential     = DefaultAzureCredential()
     project_client = AIProjectClient(endpoint=endpoint, credential=credential)
 
-    # ── Resolve AI Search connection ──────────────────────────────────────────
+    # ── Resolve AI Search connection ID ───────────────────────────────────────
     print(f"Verifying connection '{search_conn_name}'...")
     try:
         connection = project_client.connections.get(search_conn_name)
         print(f"  ✅ Connection found: {connection.name} (type: {connection.type})")
+        connection_id = connection.id
     except Exception as e:
         print(f"  ❌ Could not find connection '{search_conn_name}': {e}")
         print("\nAvailable connections:")
@@ -67,12 +68,15 @@ def main():
             pass
         sys.exit(1)
 
-    # ── Configure AI Search tool ──────────────────────────────────────────────
-    ai_search_tool = AzureAISearchAgentTool(
-        search_resources=AzureAISearchToolResource(
-            index_resources=[
+    # ── Configure AI Search tool (2.0.0 API) ──────────────────────────────────
+    # In 2.0.0 stable: AzureAISearchTool (not AzureAISearchAgentTool)
+    #   Field: azure_ai_search=AzureAISearchToolResource(indexes=[...])
+    #   Index: project_connection_id (not index_connection_id)
+    ai_search_tool = AzureAISearchTool(
+        azure_ai_search=AzureAISearchToolResource(
+            indexes=[
                 AISearchIndexResource(
-                    index_connection_id=connection.id,
+                    project_connection_id=connection_id,
                     index_name=search_index,
                     query_type=AzureAISearchQueryType.SIMPLE,
                 )
@@ -80,11 +84,11 @@ def main():
         )
     )
 
-    # ── Create agent version (new Foundry pattern) ────────────────────────────
-    # create_version() registers a named, versioned agent definition.
-    # This uses the new Foundry Agents API (visible in Foundry portal → Agents).
+    # ── Create named agent version ────────────────────────────────────────────
+    # create_version() registers the agent in Foundry (visible in portal → Agents).
+    # Each call creates a new immutable version under the same agent name.
     AGENT_NAME = "simpleagent-search"
-    print(f"Creating agent version '{AGENT_NAME}'...")
+    print(f"\nCreating agent '{AGENT_NAME}'...")
     try:
         agent_version = project_client.agents.create_version(
             agent_name=AGENT_NAME,
@@ -92,24 +96,23 @@ def main():
                 model=model,
                 instructions=(
                     "You are a helpful assistant with access to an Azure AI Search knowledge base. "
-                    "Always search for relevant information before answering. "
-                    "Provide grounded answers with inline citations. "
+                    "Always use the Azure AI Search tool to find relevant information before answering. "
+                    "Provide grounded answers and include inline citations for all claims. "
                     "If the search results don't contain the answer, say so clearly."
                 ),
-                tools=ai_search_tool.definitions,
-                tool_resources=ai_search_tool.resources,
+                tools=[ai_search_tool],
             ),
         )
-        print(f"  ✅ Agent created: name={agent_version.name}, version={agent_version.version}")
+        print(f"  ✅ Agent ready: name={agent_version.name}, version={agent_version.version}")
     except Exception as e:
         print(f"  ❌ Failed to create agent: {e}")
         sys.exit(1)
 
-    # ── Get OpenAI client and run via Responses API ───────────────────────────
-    # get_openai_client() returns an authenticated openai.OpenAI client
-    # pointing at this project's endpoint with Entra ID auth.
-    # The Responses API (client.responses.create) is the new Foundry invocation path.
-    print("\nStarting interactive session. Type 'quit' to exit.\n")
+    # ── Interactive query loop ────────────────────────────────────────────────
+    # get_openai_client() returns an openai.OpenAI client authenticated with
+    # Entra ID, pointed at this project's /openai endpoint.
+    # Responses API: openai_client.responses.create() — stateless, streaming.
+    print("\nReady! Type your questions. Enter 'quit' to exit.\n")
 
     try:
         with project_client.get_openai_client(api_version="2025-11-15-preview") as openai_client:
@@ -121,22 +124,20 @@ def main():
                     break
 
                 print("\nAgent:\n")
+                citations = []
 
                 try:
-                    response = openai_client.responses.create(
+                    stream = openai_client.responses.create(
                         model=model,
                         input=query,
-                        tools=ai_search_tool.definitions,
-                        tool_resources=ai_search_tool.resources,
+                        tools=[ai_search_tool],
                         stream=True,
                     )
 
-                    citations = []
-                    for event in response:
+                    for event in stream:
                         event_type = getattr(event, "type", None)
                         if event_type == "response.output_text.delta":
-                            delta = getattr(event, "delta", "")
-                            print(delta, end="", flush=True)
+                            print(getattr(event, "delta", ""), end="", flush=True)
                         elif event_type == "response.output_text.annotation.added":
                             ann = getattr(event, "annotation", None)
                             if ann and hasattr(ann, "url_citation"):
@@ -149,7 +150,7 @@ def main():
                     print("\n")
 
                     if citations:
-                        print("Citations:")
+                        print("Sources:")
                         seen = set()
                         idx = 1
                         for cite in citations:
@@ -163,17 +164,17 @@ def main():
                     print("\n\nInterrupted.")
                     break
                 except Exception as e:
-                    print(f"\n  ❌ Error running agent: {e}")
+                    print(f"\n  ❌ Error: {e}")
 
     finally:
-        # ── Clean up agent version ────────────────────────────────────────────
+        # ── Cleanup ───────────────────────────────────────────────────────────
         print(f"\nCleaning up agent '{AGENT_NAME}' version {agent_version.version}...")
         try:
             project_client.agents.delete_version(
                 agent_name=agent_version.name,
                 agent_version=agent_version.version,
             )
-            print("  ✅ Agent version deleted.")
+            print("  ✅ Done.")
         except Exception as e:
             print(f"  ⚠️  Could not delete agent version: {e}")
 
