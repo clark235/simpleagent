@@ -38,17 +38,18 @@ The agent acts as an intelligent middleman: it receives your question, decides i
 | Feature | **Responses API** (what we use) | **Assistants API** (older) |
 |---------|-------------------------------|--------------------------|
 | State | Stateless — no persistent threads | Stateful — persistent threads |
-| Pattern | `create_version()` → `run()` | `create()` → `create_thread()` → `create_run()` |
+| Pattern | `create_version()` → `get_openai_client()` → `responses.create()` | `create()` → `create_thread()` → `create_run()` |
 | Streaming | Native streaming events | Polling or streaming |
-| SDK Version | `azure-ai-projects >= 2.0.0b3` | `azure-ai-projects 1.x` |
+| SDK Version | `azure-ai-projects >= 2.0.0` | `azure-ai-projects 1.x` |
 | Best For | Simple request/response agents | Multi-turn conversations with memory |
 
 ```mermaid
 flowchart TB
     subgraph Responses["Responses API (Stateless)"]
         direction LR
-        R1["Create Agent<br/>Version"] --> R2["Run with Input"]
-        R2 --> R3["Stream Response"]
+        R1["Create Agent<br/>Version"] --> R2["Get OpenAI Client"]
+        R2 --> R3["responses.create()"]
+        R3 --> R4["Stream Response"]
     end
 
     subgraph Assistants["Assistants API (Stateful)"]
@@ -64,6 +65,7 @@ flowchart TB
     style R1 fill:#3b82f6,stroke:#2563eb,color:#fff
     style R2 fill:#3b82f6,stroke:#2563eb,color:#fff
     style R3 fill:#3b82f6,stroke:#2563eb,color:#fff
+    style R4 fill:#3b82f6,stroke:#2563eb,color:#fff
     style A1 fill:#f43f5e,stroke:#e11d48,color:#fff
     style A2 fill:#f43f5e,stroke:#e11d48,color:#fff
     style A3 fill:#f43f5e,stroke:#e11d48,color:#fff
@@ -87,7 +89,7 @@ sequenceDiagram
 
     App->>DAC: Request token
     DAC->>Entra: AzureCliCredential (az login)
-    Entra-->>DAC: Access token (cognitiveservices scope)
+    Entra-->>DAC: Access token (ai.azure.com scope)
     DAC-->>App: Token
 
     App->>Foundry: Create agent + run query
@@ -109,8 +111,8 @@ We uploaded 5 documents to Azure AI Search covering Azure AI Foundry topics:
 | # | Title | Category | What it covers |
 |---|-------|----------|---------------|
 | 1 | Azure AI Foundry Overview | overview | Platform overview, hub-less architecture, Responses vs Assistants API |
-| 2 | Azure AI Foundry Responses API | api | SDK details, create_version/run pattern, tool support, authentication |
-| 3 | AI Search Integration with Foundry Agents | tools | AzureAISearchAgentTool, connection setup, semantic/vector search |
+| 2 | Azure AI Foundry Responses API | api | SDK details, create_version pattern, tool support, authentication |
+| 3 | AI Search Integration with Foundry Agents | tools | AzureAISearchTool, connection setup, semantic/vector search |
 | 4 | DefaultAzureCredential Authentication Chain | auth | Credential chain order, local dev vs production, managed identity |
 | 5 | RBAC Roles for Azure AI Foundry with AI Search | security | Required roles (AI Developer, Search Index Data Reader, etc.) |
 
@@ -126,7 +128,7 @@ python validate_environment.py
 
 **What to show:** All 9 checks should pass with green checkmarks ✅
 
-- Package version (azure-ai-projects 2.0.0b3)
+- Package version (azure-ai-projects 2.0.0)
 - Environment variables (4 required vars)
 - DNS resolution
 - HTTPS connectivity
@@ -141,7 +143,7 @@ python main.py
 
 **What to show:** The agent initializes:
 - Verifies the AI Search connection
-- Creates an agent version with GPT-4o
+- Creates a named, versioned agent (`simpleagent-search`) registered in Foundry
 - Presents an interactive prompt
 
 ### Step 3: Ask Questions and Watch Streaming
@@ -165,7 +167,7 @@ These questions are designed to hit our knowledge base and produce great answers
    → Hits doc #4, walks through the credential chain
 
 5. **"How do I connect Azure AI Search to a Foundry agent?"**
-   → Hits doc #3, covers AzureAISearchAgentTool setup
+   → Hits doc #3, covers AzureAISearchTool setup
 
 ---
 
@@ -177,41 +179,45 @@ sequenceDiagram
     participant App as 🐍 main.py
     participant SDK as AIProjectClient
     participant Foundry as AI Foundry
+    participant OAI as OpenAI Client
     participant GPT as GPT-4o
     participant Search as AI Search
-    participant Index as simpleagent-index
+
+    App->>SDK: connections.get("clark-search")
+    SDK-->>App: connection.id
+
+    App->>SDK: agents.create_version(name, PromptAgentDefinition)
+    SDK->>Foundry: POST /agents — register named agent
+    Foundry-->>SDK: agent_version (name, version string)
+
+    App->>SDK: get_openai_client(api_version)
+    SDK-->>App: Authenticated OpenAI client
 
     User->>App: Enter question
-    App->>SDK: agents.create_version(model, tools, instructions)
-    SDK->>Foundry: POST /agents (create agent definition)
-    Foundry-->>SDK: agent_id
-
-    App->>SDK: agents.run(agent_id, input, stream=True)
-    SDK->>Foundry: POST /agents/{id}/run (streaming)
+    App->>OAI: responses.create(model, input, tools=[AzureAISearchTool], stream=True)
+    OAI->>Foundry: POST /openai/responses (streaming)
 
     Foundry->>GPT: Process input + decide tool use
-    GPT-->>Foundry: Tool call: AzureAISearch
-    Foundry->>Search: Query index
-    Search->>Index: Semantic search
-    Index-->>Search: Ranked documents
-    Search-->>Foundry: Results with URLs
+    GPT-->>Foundry: Tool call: azure_ai_search
+    Foundry->>Search: Query simpleagent-index
+    Search-->>Foundry: Ranked documents + URLs
 
     Foundry->>GPT: Generate answer with search context
-    GPT-->>Foundry: Streaming text + annotations
+    GPT-->>Foundry: Streaming text + url_citation annotations
 
     loop For each stream event
-        Foundry-->>SDK: response.output_text.delta
-        SDK-->>App: Print text chunk
+        Foundry-->>OAI: response.output_text.delta
+        OAI-->>App: Print text chunk
     end
 
     Note over App: Collect url_citation annotations
-    App-->>User: Display citations
+    App-->>User: Display answer + sources
 
-    App->>SDK: agents.delete_version(agent_id)
-    SDK->>Foundry: DELETE /agents/{id}
+    App->>SDK: agents.delete_version(name, version)
+    SDK->>Foundry: DELETE agent version
 ```
 
-**Key insight:** The agent is ephemeral — created for each session and deleted after. The Responses API makes this lightweight because there's no thread state to manage.
+**Key insight:** The agent is registered by name (`simpleagent-search`) and cleaned up after each session. The Responses API invocation goes through the OpenAI-compatible client — not a custom `run()` method — keeping the code portable and familiar.
 
 ---
 
