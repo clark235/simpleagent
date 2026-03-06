@@ -209,7 +209,7 @@ def check_project_connection(endpoint, connection_name):
 
         # Try to get the specific connection
         try:
-            connection = client.connections.get(connection_name=connection_name)
+            connection = client.connections.get(name=connection_name)
             return ValidationResult(
                 "Project: AI Search connection",
                 True,

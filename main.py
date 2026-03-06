@@ -50,7 +50,7 @@ def main():
     # Verify the AI Search connection exists
     print(f"Verifying connection '{search_connection}'...")
     try:
-        connection = client.connections.get(connection_name=search_connection)
+        connection = client.connections.get(name=search_connection)
         print(f"  Connection found: {connection.name} (type: {connection.type})")
     except Exception as e:
         print(f"Error: Could not find connection '{search_connection}'.")
