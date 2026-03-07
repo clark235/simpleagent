@@ -244,3 +244,53 @@ When done with the demo, delete everything:
 ```bash
 az group delete --name rg-simpleagent-demo --yes --no-wait
 ```
+
+---
+
+## 🔒 Enterprise Scenario: Customer VNet Injection
+
+> **This section applies when Foundry is deployed in a locked-down enterprise environment with private networking (BYO VNet / Standard Setup with private networking).**
+
+In this scenario, the Foundry agent runtime is **injected into a customer-owned subnet** (delegated to `Microsoft.App/environments`), and all AI Search traffic flows through private endpoints within the VNet.
+
+### Why Playground Works But Agent Doesn't in VNet Mode
+
+| | Foundry Playground | Agent AI Search Tool |
+|---|---|---|
+| **Execution location** | Foundry platform network (Microsoft) | Your injected agent subnet |
+| **DNS resolution** | Foundry platform's internal DNS | Your VNet's Private DNS configuration |
+| **Private DNS zone needed?** | No — platform handles it | ✅ Yes — must be linked to agent VNet |
+| **If DNS zone not linked** | Playground works fine ✅ | Agent returns empty / 503 ❌ |
+
+**The key insight:** Same index, two different network paths, two different DNS resolvers.
+
+### VNet Validation Script
+
+```bash
+# Validate private networking setup
+python validate_vnet_environment.py --mode private
+
+# Skip the end-to-end query (faster, DNS/connectivity only)
+python validate_vnet_environment.py --mode private --skip-e2e
+```
+
+This script checks:
+- DNS resolution (must resolve to private RFC1918 IP)
+- TCP 443 reachability
+- Private DNS zone linkage (via SDK)
+- NSG/PE connectivity
+- End-to-end agent query
+
+### Minimum Requirements for VNet Mode
+
+```
+✅ Agent subnet /24 — delegated to Microsoft.App/environments
+✅ AI Search private endpoint — in resource subnet
+✅ Private DNS zone — privatelink.search.windows.net linked to agent VNet
+✅ NSG rule — agent subnet → resource subnet TCP 443 outbound
+✅ AI Search — public access disabled
+✅ Foundry managed identity — Search Index Data Reader role
+```
+
+See full configuration guide:
+`AllanVault/Employees/Azure-AI-Foundry/foundry-customer-vnet-injection-guide.md`
