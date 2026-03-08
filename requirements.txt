@@ -1,3 +1,7 @@
+# New Foundry (Responses API) - azure-ai-projects >= 2.0.0
 azure-ai-projects>=2.0.0
 azure-identity>=1.19.0
 python-dotenv>=1.0.0
+
+# Classic Foundry (Assistants API) - separate package
+azure-ai-agents>=1.0.0
