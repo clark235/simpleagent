@@ -5,7 +5,7 @@ Creates a Foundry agent with the AI Search tool and queries it using the
 OpenAI Responses API. Returns grounded answers with URL citations.
 
 New Foundry (2025) pattern using azure-ai-projects >= 2.0.0:
-  - AIProjectClient.agents.create_version()   ← registers named agent
+  - AIProjectClient.agents.create_version()   ← registers named agent version
   - AIProjectClient.get_openai_client()        ← authenticated OpenAI client
   - openai_client.responses.create()          ← Responses API invocation
 
@@ -13,9 +13,9 @@ Requires:
   pip install "azure-ai-projects>=2.0.0" azure-identity python-dotenv
 
 Environment Variables:
-  FOUNDRY_PROJECT_ENDPOINT     — e.g. https://clark-simpleagent-vnet.services.ai.azure.com/api/projects/<name>
+  FOUNDRY_PROJECT_ENDPOINT     — e.g. https://clark-simpleagent-vnet.services.ai.azure.com/api/projects/<project-name>
   FOUNDRY_MODEL_DEPLOYMENT_NAME — e.g. gpt-4o
-  AZURE_AI_SEARCH_CONNECTION_NAME — connection name in Foundry project
+  AZURE_AI_SEARCH_CONNECTION_NAME — connection name in Foundry project (e.g. clark-search-vnet)
   AI_SEARCH_INDEX_NAME         — e.g. simpleagent-repo-index
 """
 
@@ -57,17 +57,18 @@ def main():
     credential = DefaultAzureCredential()
     client = AIProjectClient(endpoint=endpoint, credential=credential)
 
-    # ── Create / update agent version ─────────────────────────────────────────
-    search_tool = AzureAISearchTool(
-        index_connection_name=search_conn_name,
+    # ── Build search tool ─────────────────────────────────────────────────────
+    search_index_resource = AISearchIndexResource(
+        project_connection_id=search_conn_name,
         index_name=search_index,
         query_type=AzureAISearchQueryType.SEMANTIC,
-        semantic_configuration_name="default",
         top_k=5,
     )
+    search_tool_resource = AzureAISearchToolResource(indexes=[search_index_resource])
+    search_tool = AzureAISearchTool(azure_ai_search=search_tool_resource)
 
-    agent_def = client.agents.create_version(
-        name="simpleagent-search-bot",
+    # ── Create / update agent version ─────────────────────────────────────────
+    agent_definition = PromptAgentDefinition(
         model=model,
         instructions=(
             "You are a helpful assistant for the simpleagent Azure AI Foundry demo. "
@@ -75,15 +76,15 @@ def main():
             "repository contents, including its architecture, deployment steps, and code. "
             "Always cite the source filename when you use information from the search results."
         ),
-        tools=search_tool.definitions,
-        tool_resources=AzureAISearchToolResource(
-            indexes=[AISearchIndexResource(
-                index_connection_id=search_conn_name,
-                index_name=search_index,
-            )]
-        ),
+        tools=[search_tool],
     )
-    print(f"Agent version registered: {agent_def.id}")
+
+    agent_version = client.agents.create_version(
+        agent_name="simpleagent-search-bot",
+        definition=agent_definition,
+        description="simpleagent VNet demo — Responses API with Azure AI Search",
+    )
+    print(f"Agent version registered: {agent_version.id}")
 
     # ── Run via Responses API ──────────────────────────────────────────────────
     openai_client = client.get_openai_client()
@@ -96,13 +97,8 @@ def main():
     response = openai_client.responses.create(
         model=model,
         input=question,
-        tools=search_tool.definitions,
-        tool_resources=AzureAISearchToolResource(
-            indexes=[AISearchIndexResource(
-                index_connection_id=search_conn_name,
-                index_name=search_index,
-            )]
-        ),
+        tools=[search_tool],
+        tool_resources=search_tool_resource,
     )
 
     print("Answer:")
